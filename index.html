@@ -1301,8 +1301,8 @@
         function toggleMute() {
             isMuted = !isMuted;
             document.querySelector('.mute-toggle').textContent = isMuted ? '🔇' : '🔊';
-            if (birthdaySong) {
-                birthdaySong.muted = isMuted;
+            if (songScheduledNotes && songScheduledNotes.masterGain) {
+                songScheduledNotes.masterGain.gain.setValueAtTime(isMuted ? 0 : 0.6, songCtx.currentTime);
             }
         }
 
@@ -1382,62 +1382,140 @@
             }
         }
 
-        /* ── Birthday Song (Direct MP3) ── */
-        const BIRTHDAY_SONG_URL = 'https://ia800504.us.archive.org/33/items/HappyBirthdayToYou_201903/Happy%20Birthday%20To%20You.mp3';
-        let birthdaySong = null;
+        /* ── Birthday Song (Web Audio API Synthesizer) ── */
         let songPlaying = false;
+        let songCtx = null;
+        let songTimeout = null;
+        let songScheduledNotes = [];
+
+        // "Happy Birthday to You" melody — note, octave, duration (beats)
+        const HAPPY_BIRTHDAY_NOTES = [
+            // Happy birthday to you
+            ['C',4,0.75],['C',4,0.25],['D',4,1],['C',4,1],['F',4,1],['E',4,2],
+            // Happy birthday to you
+            ['C',4,0.75],['C',4,0.25],['D',4,1],['C',4,1],['G',4,1],['F',4,2],
+            // Happy birthday dear Kinza
+            ['C',4,0.75],['C',4,0.25],['C',5,1],['A',4,1],['F',4,1],['E',4,1],['D',4,1],
+            // Happy birthday to you
+            ['Bb',4,0.75],['Bb',4,0.25],['A',4,1],['F',4,1],['G',4,1],['F',4,2]
+        ];
+
+        const NOTE_FREQ = {
+            'C3':130.81,'D3':146.83,'E3':164.81,'F3':174.61,'G3':196.00,'A3':220.00,'Bb3':233.08,'B3':246.94,
+            'C4':261.63,'D4':293.66,'E4':329.63,'F4':349.23,'G4':392.00,'A4':440.00,'Bb4':466.16,'B4':493.88,
+            'C5':523.25,'D5':587.33,'E5':659.25,'F5':698.46,'G5':783.99,'A5':880.00,'Bb5':932.33,'B5':987.77
+        };
+
+        const BPM = 120;
+        const BEAT_DUR = 60 / BPM;
+
+        function playNote(ctx, freq, startTime, duration, masterGain) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+
+            // Warm piano-like tone using triangle + slight detune
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(freq, startTime);
+
+            // Add harmonics for richness
+            const osc2 = ctx.createOscillator();
+            const gain2 = ctx.createGain();
+            osc2.type = 'sine';
+            osc2.frequency.setValueAtTime(freq * 2, startTime);
+            gain2.gain.setValueAtTime(0.15, startTime);
+
+            // ADSR envelope
+            const attackTime = 0.02;
+            const decayTime = 0.1;
+            const sustainLevel = 0.5;
+            const releaseTime = 0.15;
+            const endTime = startTime + duration;
+
+            gain.gain.setValueAtTime(0, startTime);
+            gain.gain.linearRampToValueAtTime(0.45, startTime + attackTime);
+            gain.gain.linearRampToValueAtTime(sustainLevel * 0.45, startTime + attackTime + decayTime);
+            gain.gain.setValueAtTime(sustainLevel * 0.45, endTime - releaseTime);
+            gain.gain.linearRampToValueAtTime(0, endTime);
+
+            osc.connect(gain);
+            osc2.connect(gain2);
+            gain2.connect(gain);
+            gain.connect(masterGain);
+
+            osc.start(startTime);
+            osc.stop(endTime + 0.01);
+            osc2.start(startTime);
+            osc2.stop(endTime + 0.01);
+
+            return { osc, osc2 };
+        }
+
+        function scheduleMelody() {
+            if (!songCtx) songCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const ctx = songCtx;
+            if (ctx.state === 'suspended') ctx.resume();
+
+            const masterGain = ctx.createGain();
+            masterGain.gain.setValueAtTime(isMuted ? 0 : 0.6, ctx.currentTime);
+            masterGain.connect(ctx.destination);
+            songScheduledNotes.masterGain = masterGain;
+
+            let time = ctx.currentTime + 0.1;
+            const scheduledOscs = [];
+
+            for (const [note, octave, beats] of HAPPY_BIRTHDAY_NOTES) {
+                const freq = NOTE_FREQ[note + octave];
+                if (freq) {
+                    const dur = beats * BEAT_DUR;
+                    const oscs = playNote(ctx, freq, time, dur * 0.9, masterGain);
+                    scheduledOscs.push(oscs);
+                    time += dur;
+                }
+            }
+
+            songScheduledNotes = scheduledOscs;
+            songScheduledNotes.masterGain = masterGain;
+
+            // Total duration of melody
+            const totalDur = HAPPY_BIRTHDAY_NOTES.reduce((sum, n) => sum + n[2] * BEAT_DUR, 0);
+
+            // Loop: schedule next play after melody finishes + small pause
+            songTimeout = setTimeout(() => {
+                if (songPlaying) scheduleMelody();
+            }, (totalDur + 1) * 1000);
+        }
 
         function startBirthdaySong() {
             document.getElementById('music-bar').classList.add('visible');
-            if (!birthdaySong) {
-                birthdaySong = new Audio(BIRTHDAY_SONG_URL);
-                birthdaySong.loop = true;
-                birthdaySong.volume = 0.6;
-                birthdaySong.muted = isMuted;
-                birthdaySong.addEventListener('ended', () => {
-                    songPlaying = false;
-                    updateMusicUI();
-                });
-                birthdaySong.addEventListener('play', () => {
-                    songPlaying = true;
-                    updateMusicUI();
-                });
-                birthdaySong.addEventListener('pause', () => {
-                    songPlaying = false;
-                    updateMusicUI();
-                });
-            }
-            birthdaySong.play().then(() => {
+            if (!songPlaying) {
                 songPlaying = true;
-                updateMusicUI();
-            }).catch(() => {
-                // Autoplay blocked — user can tap the play button
-                updateMusicUI();
-            });
-        }
-
-        function toggleBirthdaySong() {
-            if (!birthdaySong) {
-                birthdaySong = new Audio(BIRTHDAY_SONG_URL);
-                birthdaySong.loop = true;
-                birthdaySong.volume = 0.6;
-                birthdaySong.muted = isMuted;
-            }
-            if (songPlaying) {
-                birthdaySong.pause();
-                songPlaying = false;
-            } else {
-                birthdaySong.play().catch(() => {});
-                songPlaying = true;
+                scheduleMelody();
             }
             updateMusicUI();
         }
 
-        function stopBirthdaySong() {
-            if (birthdaySong) {
-                birthdaySong.pause();
-                birthdaySong.currentTime = 0;
+        function toggleBirthdaySong() {
+            if (songPlaying) {
+                stopSongPlayback();
+                songPlaying = false;
+            } else {
+                songPlaying = true;
+                scheduleMelody();
             }
+            updateMusicUI();
+        }
+
+        function stopSongPlayback() {
+            clearTimeout(songTimeout);
+            if (songCtx) {
+                songCtx.close().catch(() => {});
+                songCtx = null;
+            }
+            songScheduledNotes = [];
+        }
+
+        function stopBirthdaySong() {
+            stopSongPlayback();
             songPlaying = false;
             updateMusicUI();
             document.getElementById('music-bar').classList.remove('visible');
